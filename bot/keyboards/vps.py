@@ -64,3 +64,14 @@ def secret_confirm_keyboard(server_id: str) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def add_server_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data="vps:add:confirm"),
+                InlineKeyboardButton(text="❌ Отменить", callback_data="vps:add:cancel"),
+            ]
+        ]
+    )

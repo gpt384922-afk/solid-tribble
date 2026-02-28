@@ -76,6 +76,14 @@ class BillingService:
                 .order_by(Billing.expires_at.asc())
             )
 
+    async def latest_billing_for_server(self, server_id: uuid.UUID) -> Billing | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(Billing)
+                .where(Billing.server_id == server_id)
+                .order_by(Billing.paid_at.desc(), Billing.id.desc())
+            )
+
     async def monthly_summary(self, owner_telegram_id: int, target_date: date | None = None) -> dict[str, Decimal]:
         current = target_date or date.today()
         month_start = date(current.year, current.month, 1)

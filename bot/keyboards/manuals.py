@@ -60,3 +60,14 @@ def manual_category_choose_keyboard() -> InlineKeyboardMarkup:
     ]
     keyboard = [[InlineKeyboardButton(text=title, callback_data=f"manual:cat_pick:{key}")] for key, title in items]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def add_manual_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data="manual:add:confirm"),
+                InlineKeyboardButton(text="❌ Отменить", callback_data="manual:add:cancel"),
+            ]
+        ]
+    )
