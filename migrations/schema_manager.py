@@ -2,14 +2,14 @@
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from db.base import Base
 from db.models import SchemaVersion
 
 logger = logging.getLogger(__name__)
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 async def ensure_schema(engine: AsyncEngine, session_factory: async_sessionmaker) -> None:
@@ -32,6 +32,12 @@ async def ensure_schema(engine: AsyncEngine, session_factory: async_sessionmaker
 
 
 async def apply_manual_migrations(engine: AsyncEngine, from_version: int, to_version: int) -> None:
-    logger.warning("Ручные миграции не требуются: from=%s to=%s", from_version, to_version)
-    # Здесь можно добавлять последовательные ALTER TABLE, если схема будет расти.
-    _ = engine
+    if from_version < 2 <= to_version:
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE servers DROP COLUMN IF EXISTS status"))
+            await conn.execute(text("DROP INDEX IF EXISTS ix_servers_owner_status"))
+            await conn.execute(text("DROP TYPE IF EXISTS server_status_enum"))
+            await conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_servers_owner_name ON servers (owner_telegram_id, name)")
+            )
+        logger.info("Миграция v2: удалено поле status и связанные объекты.")

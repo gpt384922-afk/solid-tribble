@@ -9,7 +9,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import joinedload
 
-from db.models import Billing, Server, ServerStatus
+from db.models import Billing, Server
 from services.schemas import BillingCreateSchema
 
 
@@ -43,7 +43,6 @@ class BillingService:
                 .join(Billing, Billing.server_id == Server.id)
                 .where(
                     Server.owner_telegram_id == owner_telegram_id,
-                    Server.status == ServerStatus.ACTIVE,
                     Billing.expires_at >= start_date,
                     Billing.expires_at <= end_date,
                 )
@@ -118,7 +117,6 @@ class BillingService:
                 .options(joinedload(Server.tags))
                 .where(
                     and_(
-                        Server.status == ServerStatus.ACTIVE,
                         Billing.expires_at >= today,
                         Billing.expires_at <= date_limit,
                     )

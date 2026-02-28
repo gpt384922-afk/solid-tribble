@@ -6,8 +6,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 def billing_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⏰ Истекают в 7 дней", callback_data="bill:expiring:7")],
-            [InlineKeyboardButton(text="📆 Истекают в 30 дней", callback_data="bill:expiring:30")],
+            [InlineKeyboardButton(text="⚠ В 7 дней", callback_data="bill:expiring:7")],
+            [InlineKeyboardButton(text="📆 В 30 дней", callback_data="bill:expiring:30")],
             [InlineKeyboardButton(text="💰 Сводка за месяц", callback_data="bill:summary")],
             [InlineKeyboardButton(text="➕ Добавить оплату", callback_data="bill:add_start")],
         ]

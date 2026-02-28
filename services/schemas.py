@@ -161,4 +161,4 @@ def parse_manual_commands(markdown_text: str) -> list[str]:
     return [m.strip() for m in pattern.findall(markdown_text) if m.strip()]
 
 
-SearchScope = Literal["all", "active", "archived", "expiring_7"]
+SearchScope = Literal["all", "expiring_7"]

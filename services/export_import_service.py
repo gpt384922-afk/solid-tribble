@@ -36,7 +36,6 @@ class ExportImportService:
             "secret_type": server.secret_type.value,
             "tags": [t.tag for t in server.tags],
             "notes": server.notes,
-            "status": server.status.value,
             "is_favorite": server.is_favorite,
             "cpu_load": float(server.cpu_load) if server.cpu_load is not None else None,
             "ram_load": float(server.ram_load) if server.ram_load is not None else None,

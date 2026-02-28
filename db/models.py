@@ -42,11 +42,6 @@ class SecretType(str, enum.Enum):
     NONE = "none"
 
 
-class ServerStatus(str, enum.Enum):
-    ACTIVE = "active"
-    ARCHIVED = "archived"
-
-
 class ManualCategory(str, enum.Enum):
     INSTALL = "install"
     TROUBLESHOOT = "troubleshoot"
@@ -77,7 +72,7 @@ class Server(Base):
     __tablename__ = "servers"
     __table_args__ = (
         UniqueConstraint("owner_telegram_id", "name", name="uq_server_owner_name"),
-        Index("ix_servers_owner_status", "owner_telegram_id", "status"),
+        Index("ix_servers_owner_name", "owner_telegram_id", "name"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -93,7 +88,6 @@ class Server(Base):
     secret_type: Mapped[SecretType] = mapped_column(Enum(SecretType, name="secret_type_enum"), default=SecretType.NONE)
     secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[ServerStatus] = mapped_column(Enum(ServerStatus, name="server_status_enum"), default=ServerStatus.ACTIVE)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
     cpu_load: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     ram_load: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)

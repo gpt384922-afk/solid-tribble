@@ -23,17 +23,17 @@ async def cmd_start(message: Message) -> None:
 
 @router.message(F.text == "📦 VPS")
 async def open_vps(message: Message) -> None:
-    await message.answer("Раздел VPS", reply_markup=vps_menu_keyboard())
+    await message.answer("VPS", reply_markup=vps_menu_keyboard())
 
 
 @router.message(F.text == "📅 Оплаты / истечения")
 async def open_billing(message: Message) -> None:
-    await message.answer("Раздел оплат", reply_markup=billing_menu_keyboard())
+    await message.answer("Оплаты / истечения", reply_markup=billing_menu_keyboard())
 
 
-@router.message(F.text == "🧠 Мануалы")
+@router.message(F.text == "📚 База знаний")
 async def open_manuals(message: Message) -> None:
-    await message.answer("Раздел мануалов", reply_markup=manuals_menu_keyboard())
+    await message.answer("📚 База знаний", reply_markup=manuals_menu_keyboard())
 
 
 @router.message(F.text == "⚙️ Настройки")
@@ -46,19 +46,19 @@ async def open_settings(message: Message, is_admin: bool) -> None:
 
 @router.callback_query(F.data == "menu:vps")
 async def cb_vps_menu(query: CallbackQuery) -> None:
-    await query.message.edit_text("Раздел VPS", reply_markup=vps_menu_keyboard())
+    await query.message.edit_text("VPS", reply_markup=vps_menu_keyboard())
     await query.answer()
 
 
 @router.callback_query(F.data == "menu:billing")
 async def cb_billing_menu(query: CallbackQuery) -> None:
-    await query.message.edit_text("Раздел оплат", reply_markup=billing_menu_keyboard())
+    await query.message.edit_text("Оплаты / истечения", reply_markup=billing_menu_keyboard())
     await query.answer()
 
 
 @router.callback_query(F.data == "menu:manual")
 async def cb_manual_menu(query: CallbackQuery) -> None:
-    await query.message.edit_text("Раздел мануалов", reply_markup=manuals_menu_keyboard())
+    await query.message.edit_text("📚 База знаний", reply_markup=manuals_menu_keyboard())
     await query.answer()
 
 

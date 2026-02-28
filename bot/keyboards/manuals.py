@@ -13,7 +13,7 @@ CATEGORY_TITLE = {
 def manuals_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📚 Категории", callback_data="manual:categories")],
+            [InlineKeyboardButton(text="📂 Категории", callback_data="manual:categories")],
             [InlineKeyboardButton(text="🔎 Поиск", callback_data="manual:search")],
             [InlineKeyboardButton(text="➕ Добавить статью", callback_data="manual:add")],
         ]

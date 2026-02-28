@@ -29,15 +29,21 @@ async def bill_add_start(query: CallbackQuery, services: AppServices, user_id: i
 async def bill_expiring(query: CallbackQuery, services: AppServices, user_id: int) -> None:
     days = int(query.data.split(":")[2])
     rows = await services.billing.list_expiring(user_id, days)
+    title = "⚠ В 7 дней" if days == 7 else "📆 В 30 дней"
     if not rows:
-        await query.message.edit_text(f"В ближайшие {days} дней истечений нет.", reply_markup=billing_menu_keyboard())
+        await query.message.edit_text(f"{title}\n━━━━━━━━━━━━━━━━\nПусто", reply_markup=billing_menu_keyboard())
         await query.answer()
         return
 
-    lines = [f"Истекают в {days} дней:"]
+    lines = [title, "━━━━━━━━━━━━━━━━"]
     for server, billing, delta in rows:
+        day_word = "день" if delta == 1 else "дней"
         lines.append(
-            f"- {server.name} ({server.ip4}) -> {billing.expires_at.strftime('%d.%m.%Y')} ({delta} дн), {billing.price_amount} {billing.price_currency}"
+            f"🖥 {server.name}\n"
+            f"📅 {billing.expires_at.strftime('%d.%m.%Y')}\n"
+            f"⏳ {delta} {day_word}\n"
+            f"💰 {billing.price_amount} {billing.price_currency}\n"
+            "━━━━━━━━━━━━━━━━"
         )
     await query.message.edit_text("\n".join(lines), reply_markup=billing_menu_keyboard())
     await query.answer()

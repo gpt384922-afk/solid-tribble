@@ -4,7 +4,7 @@
 MAIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📦 VPS"), KeyboardButton(text="📅 Оплаты / истечения")],
-        [KeyboardButton(text="🧠 Мануалы"), KeyboardButton(text="⚙️ Настройки")],
+        [KeyboardButton(text="📚 База знаний"), KeyboardButton(text="⚙️ Настройки")],
     ],
     resize_keyboard=True,
 )

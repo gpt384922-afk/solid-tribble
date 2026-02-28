@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import joinedload
 
 from crypto.secrets import SecretCipher
-from db.models import Billing, SecretType, Server, ServerStatus, ServerTag
+from db.models import Billing, SecretType, Server, ServerTag
 from services.schemas import SearchScope, ServerCreateSchema
 
 
@@ -56,11 +56,6 @@ class ServerService:
     ) -> tuple[list[Server], int]:
         offset = (max(page, 1) - 1) * page_size
         conditions = [Server.owner_telegram_id == owner_telegram_id]
-
-        if scope == "active":
-            conditions.append(Server.status == ServerStatus.ACTIVE)
-        elif scope == "archived":
-            conditions.append(Server.status == ServerStatus.ARCHIVED)
 
         if role:
             conditions.append(Server.role == role)
@@ -126,20 +121,6 @@ class ServerService:
         async with self._session_factory() as session:
             return await session.scalar(select(Server).where(Server.id == uid).options(joinedload(Server.tags), joinedload(Server.billings)))
 
-    async def toggle_archive(self, owner_telegram_id: int, server_id: str) -> Server | None:
-        try:
-            server_uuid = uuid.UUID(server_id)
-        except ValueError:
-            return None
-        async with self._session_factory() as session:
-            server = await session.scalar(select(Server).where(Server.id == server_uuid, Server.owner_telegram_id == owner_telegram_id))
-            if server is None:
-                return None
-            server.status = ServerStatus.ARCHIVED if server.status == ServerStatus.ACTIVE else ServerStatus.ACTIVE
-            await session.commit()
-            await session.refresh(server)
-            return server
-
     async def toggle_favorite(self, owner_telegram_id: int, server_id: str) -> Server | None:
         try:
             server_uuid = uuid.UUID(server_id)
@@ -154,31 +135,19 @@ class ServerService:
             await session.refresh(server)
             return server
 
-    async def update_server_notes_and_load(
-        self,
-        owner_telegram_id: int,
-        server_id: str,
-        notes: str,
-        cpu_load: float | None,
-        ram_load: float | None,
-        disk_load: float | None,
-        net_notes: str | None,
-    ) -> bool:
+    async def delete_server(self, owner_telegram_id: int, server_id: str) -> str | None:
         try:
             server_uuid = uuid.UUID(server_id)
         except ValueError:
-            return False
+            return None
         async with self._session_factory() as session:
             server = await session.scalar(select(Server).where(Server.id == server_uuid, Server.owner_telegram_id == owner_telegram_id))
             if server is None:
-                return False
-            server.notes = notes
-            server.cpu_load = cpu_load
-            server.ram_load = ram_load
-            server.disk_load = disk_load
-            server.net_notes = net_notes
+                return None
+            name = server.name
+            await session.delete(server)
             await session.commit()
-            return True
+            return name
 
     async def reveal_secret(self, owner_telegram_id: int, server_id: str) -> str | None:
         try:

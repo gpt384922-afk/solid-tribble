@@ -13,17 +13,19 @@ from bot.dependencies import AppServices
 from bot.keyboards.main import CANCEL_MENU
 from bot.keyboards.vps import (
     add_server_confirm_keyboard,
-    secret_confirm_keyboard,
+    delete_confirm_keyboard,
+    expiring_menu_keyboard,
     server_card_keyboard,
     server_list_keyboard,
     vps_menu_keyboard,
 )
 from bot.states.vps_states import AddServerStates, SearchServerState
-from bot.utils import send_temporary_secret
-from db.models import ServerRole, ServerStatus
+from db.models import ServerRole
 from services.schemas import BillingCreateSchema, SECRET_TYPE_MAP, ServerCreateSchema
 
 router = Router()
+PAGE_SIZE = 5
+
 
 def _opt(value: str) -> str | None:
     cleaned = value.strip()
@@ -83,11 +85,27 @@ def _preview_text(data: dict[str, str]) -> str:
     )
 
 
+def _status_marker(expires_at: date | None) -> tuple[str, str]:
+    if expires_at is None:
+        return "⚪", "📅 Нет даты"
+
+    days_left = (expires_at - date.today()).days
+    if days_left <= 1:
+        if days_left < 0:
+            return "🔴", "⚠ Просрочен"
+        if days_left == 0:
+            return "🔴", "⚠ Истекает сегодня"
+        return "🔴", "⚠ Истекает завтра"
+    if days_left <= 14:
+        return "🟡", f"⚠ {days_left} дней"
+    return "🟢", f"📅 До {expires_at.strftime('%d.%m.%Y')}"
+
+
 def _server_card_text(server, latest_billing) -> str:
     domain = server.domain or "—"
     if latest_billing:
         amount = f"{latest_billing.price_amount} {latest_billing.price_currency}"
-        expires = latest_billing.expires_at.isoformat()
+        expires = latest_billing.expires_at.strftime("%d.%m.%Y")
     else:
         amount = "—"
         expires = "—"
@@ -95,14 +113,45 @@ def _server_card_text(server, latest_billing) -> str:
     return (
         "━━━━━━━━━━━━━━━━\n"
         f"🖥 {html.escape(server.name)}\n"
-        f"🏢 {html.escape(server.provider)}\n"
+        f"🏢 {html.escape(server.provider)}\n\n"
         f"🌍 {html.escape(server.ip4)}\n"
         f"🔗 {html.escape(domain)}\n\n"
-        f"🔐 SSH: {html.escape(server.ssh_user)}@{html.escape(server.ip4)}\n"
+        f"🔐 SSH: {html.escape(server.ssh_user)}@{html.escape(server.ip4)}\n\n"
         f"💰 {html.escape(amount)}\n"
         f"📅 До: {html.escape(expires)}\n"
         "━━━━━━━━━━━━━━━━"
     )
+
+
+async def _format_server_list_blocks(services: AppServices, servers: list) -> tuple[list[str], list[tuple[str, str]]]:
+    blocks: list[str] = []
+    buttons: list[tuple[str, str]] = []
+
+    for server in servers:
+        nearest = await services.billing.nearest_billing_for_server(server.id)
+        expires = nearest.expires_at if nearest else None
+        emoji, line3 = _status_marker(expires)
+
+        blocks.append(
+            f"{emoji} {html.escape(server.name)}\n"
+            f"🌍 {html.escape(server.ip4)}\n"
+            f"{line3}"
+        )
+        buttons.append((str(server.id), f"{emoji} {server.name}"))
+
+    return blocks, buttons
+
+
+def _join_cards(title: str, blocks: list[str]) -> str:
+    if not blocks:
+        return f"{title}\n━━━━━━━━━━━━━━━━\nПусто"
+
+    parts = [title, "━━━━━━━━━━━━━━━━"]
+    for index, block in enumerate(blocks):
+        parts.append(block)
+        if index != len(blocks) - 1:
+            parts.append("━━━━━━━━━━━━━━━━")
+    return "\n".join(parts)
 
 
 async def _render_server_card(query: CallbackQuery, services: AppServices, user_id: int, server_id: str) -> None:
@@ -115,7 +164,7 @@ async def _render_server_card(query: CallbackQuery, services: AppServices, user_
     await query.message.edit_text(
         _server_card_text(server, latest_billing),
         parse_mode="HTML",
-        reply_markup=server_card_keyboard(str(server.id), server.status == ServerStatus.ARCHIVED, server.is_favorite),
+        reply_markup=server_card_keyboard(str(server.id)),
     )
 
 
@@ -326,7 +375,7 @@ async def add_server_confirm(query: CallbackQuery, state: FSMContext, services: 
         await query.message.edit_text(
             _server_card_text(refreshed, latest_billing),
             parse_mode="HTML",
-            reply_markup=server_card_keyboard(str(refreshed.id), refreshed.status == ServerStatus.ARCHIVED, refreshed.is_favorite),
+            reply_markup=server_card_keyboard(str(refreshed.id)),
         )
     else:
         await query.message.edit_text("Сервер сохранен.")
@@ -344,60 +393,93 @@ async def add_server_cancel(query: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "vps:search")
 async def vps_search_start(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SearchServerState.query)
-    await query.message.answer("Введите строку поиска (имя/IP/провайдер):", reply_markup=CANCEL_MENU)
+    await query.message.answer("Введите строку поиска:", reply_markup=CANCEL_MENU)
     await query.answer()
 
 
 @router.message(SearchServerState.query)
 async def vps_search_apply(message: Message, state: FSMContext, services: AppServices, user_id: int) -> None:
-    query_text = message.text or ""
-    servers, total = await services.servers.list_servers(user_id, page=1, search=query_text)
+    query_text = (message.text or "").strip()
+    servers, total = await services.servers.list_servers(user_id, page=1, search=query_text, page_size=PAGE_SIZE)
     await state.clear()
     if not servers:
         await message.answer("Ничего не найдено.")
         return
-    items = [(str(s.id), f"{s.name} ({s.ip4})") for s in servers]
-    await message.answer(f"Найдено: {total}", reply_markup=server_list_keyboard(items, 1, total))
+
+    blocks, buttons = await _format_server_list_blocks(services, servers)
+    await message.answer(
+        _join_cards("🔎 Результаты", blocks),
+        parse_mode="HTML",
+        reply_markup=server_list_keyboard(buttons, 1, total, page_size=max(total, 1)),
+    )
 
 
-@router.callback_query(F.data.startswith("vps:filter:"))
-async def vps_filter(query: CallbackQuery, services: AppServices, user_id: int) -> None:
-    mode = query.data.split(":", maxsplit=2)[2]
-    if mode == "favorites":
-        servers, _ = await services.servers.list_servers(user_id, scope="all", page_size=100)
-        servers = [s for s in servers if s.is_favorite]
-        if not servers:
-            await query.message.edit_text("Избранных серверов нет.", reply_markup=vps_menu_keyboard())
-            await query.answer()
-            return
-        items = [(str(s.id), f"⭐ {s.name} ({s.ip4})") for s in servers]
-        await query.message.edit_text("Избранные серверы:", reply_markup=server_list_keyboard(items, 1, len(items), page_size=max(1, len(items))))
+@router.callback_query(F.data == "vps:expiring_menu")
+async def vps_expiring_menu(query: CallbackQuery) -> None:
+    await query.message.edit_text("⏰ Истекают", reply_markup=expiring_menu_keyboard())
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("vps:expiring:"))
+async def vps_expiring(query: CallbackQuery, services: AppServices, user_id: int) -> None:
+    days = int(query.data.split(":", maxsplit=2)[2])
+    rows = await services.billing.list_expiring(user_id, days)
+
+    if not rows:
+        title = "⚠ В 7 дней" if days == 7 else "📆 В 30 дней"
+        await query.message.edit_text(f"{title}\n━━━━━━━━━━━━━━━━\nПусто", reply_markup=expiring_menu_keyboard())
         await query.answer()
         return
 
-    scope = mode if mode in {"active", "archived", "expiring_7"} else "all"
-    servers, total = await services.servers.list_servers(user_id, page=1, scope=scope)
-    if not servers:
-        await query.message.edit_text("Список пуст.", reply_markup=vps_menu_keyboard())
+    cards: list[str] = []
+    for server, billing, delta in rows:
+        day_word = "день" if delta == 1 else "дней"
+        cards.append(
+            f"🖥 {html.escape(server.name)}\n"
+            f"📅 {billing.expires_at.strftime('%d.%m.%Y')}\n"
+            f"⏳ {delta} {day_word}\n"
+            f"💰 {billing.price_amount} {billing.price_currency}"
+        )
+
+    title = "⚠ В 7 дней" if days == 7 else "📆 В 30 дней"
+    await query.message.edit_text(_join_cards(title, cards), parse_mode="HTML", reply_markup=expiring_menu_keyboard())
+    await query.answer()
+
+
+@router.callback_query(F.data == "vps:filter:favorites")
+async def vps_favorites(query: CallbackQuery, services: AppServices, user_id: int) -> None:
+    servers, _ = await services.servers.list_servers(user_id, page=1, page_size=200)
+    favorites = [srv for srv in servers if srv.is_favorite]
+
+    if not favorites:
+        await query.message.edit_text("⭐ Избранное\n━━━━━━━━━━━━━━━━\nПусто", reply_markup=vps_menu_keyboard())
         await query.answer()
         return
 
-    items = [(str(s.id), f"{s.name} ({s.ip4})") for s in servers]
-    await query.message.edit_text("Результат фильтра:", reply_markup=server_list_keyboard(items, 1, total))
+    blocks, buttons = await _format_server_list_blocks(services, favorites)
+    await query.message.edit_text(
+        _join_cards("⭐ Избранное", blocks),
+        parse_mode="HTML",
+        reply_markup=server_list_keyboard(buttons, 1, len(favorites), page_size=max(len(favorites), 1)),
+    )
     await query.answer()
 
 
 @router.callback_query(F.data.startswith("vps:list:"))
 async def vps_list(query: CallbackQuery, services: AppServices, user_id: int) -> None:
-    page = int(query.data.split(":")[2])
-    servers, total = await services.servers.list_servers(user_id, page=page)
+    page = int(query.data.split(":", maxsplit=2)[2])
+    servers, total = await services.servers.list_servers(user_id, page=page, page_size=PAGE_SIZE)
     if not servers:
-        await query.message.edit_text("Серверов пока нет.", reply_markup=vps_menu_keyboard())
+        await query.message.edit_text("📋 Список серверов\n━━━━━━━━━━━━━━━━\nПусто", reply_markup=vps_menu_keyboard())
         await query.answer()
         return
 
-    items = [(str(s.id), f"{'⭐ ' if s.is_favorite else ''}{s.name} ({s.ip4})") for s in servers]
-    await query.message.edit_text("Список серверов:", reply_markup=server_list_keyboard(items, page, total))
+    blocks, buttons = await _format_server_list_blocks(services, servers)
+    await query.message.edit_text(
+        _join_cards("📋 Список серверов", blocks),
+        parse_mode="HTML",
+        reply_markup=server_list_keyboard(buttons, page, total, page_size=PAGE_SIZE),
+    )
     await query.answer()
 
 
@@ -408,80 +490,45 @@ async def vps_card(query: CallbackQuery, services: AppServices, user_id: int) ->
     await query.answer()
 
 
-@router.callback_query(F.data.startswith("vps:copy_ip:"))
-async def vps_copy_ip(query: CallbackQuery, services: AppServices, user_id: int) -> None:
+@router.callback_query(F.data.startswith("vps:delete_ask:"))
+async def vps_delete_ask(query: CallbackQuery, services: AppServices, user_id: int) -> None:
     server_id = query.data.split(":", maxsplit=2)[2]
     server = await services.servers.get_server(user_id, server_id)
     if not server:
         await query.answer("Сервер не найден", show_alert=True)
         return
-    await query.message.answer(f"IP для копирования:\n<code>{server.ip4}</code>", parse_mode="HTML")
-    await query.answer("Отправил")
 
-
-@router.callback_query(F.data.startswith("vps:copy_ssh:"))
-async def vps_copy_ssh(query: CallbackQuery, services: AppServices, user_id: int) -> None:
-    server_id = query.data.split(":", maxsplit=2)[2]
-    server = await services.servers.get_server(user_id, server_id)
-    if not server:
-        await query.answer("Сервер не найден", show_alert=True)
-        return
-    cmd = f"ssh {server.ssh_user}@{server.ip4}"
-    await query.message.answer(f"SSH для копирования:\n<code>{cmd}</code>", parse_mode="HTML")
-    await query.answer("Отправил")
-
-
-@router.callback_query(F.data.startswith("vps:copy_all:"))
-async def vps_copy_all(query: CallbackQuery, services: AppServices, user_id: int) -> None:
-    server_id = query.data.split(":", maxsplit=2)[2]
-    server = await services.servers.get_server(user_id, server_id)
-    if not server:
-        await query.answer("Сервер не найден", show_alert=True)
-        return
-    block = services.servers.build_copy_block(server)
-    await query.message.answer(f"<pre>{block}</pre>", parse_mode="HTML")
-    await query.answer("Отправил")
-
-
-@router.callback_query(F.data.startswith("vps:secret_ask:"))
-async def vps_secret_ask(query: CallbackQuery) -> None:
-    server_id = query.data.split(":", maxsplit=2)[2]
-    await query.message.answer("Показать секрет? Сообщение будет удалено автоматически.", reply_markup=secret_confirm_keyboard(server_id))
+    await query.message.edit_text(
+        f"Вы уверены, что хотите удалить сервер {html.escape(server.name)}? Это действие необратимо.",
+        parse_mode="HTML",
+        reply_markup=delete_confirm_keyboard(server_id),
+    )
     await query.answer()
 
 
-@router.callback_query(F.data.startswith("vps:secret_show:"))
-async def vps_secret_show(query: CallbackQuery, services: AppServices, user_id: int) -> None:
+@router.callback_query(F.data.startswith("vps:delete_confirm:"))
+async def vps_delete_confirm(query: CallbackQuery, services: AppServices, user_id: int) -> None:
     server_id = query.data.split(":", maxsplit=2)[2]
-    secret = await services.servers.reveal_secret(user_id, server_id)
-    if not secret:
-        await query.answer("Секрет не задан", show_alert=True)
+    try:
+        deleted_name = await services.servers.delete_server(user_id, server_id)
+    except Exception as exc:  # noqa: BLE001
+        await query.answer("Ошибка удаления", show_alert=True)
+        await query.message.answer(f"Не удалось удалить сервер: {exc}")
         return
-    ttl = await services.settings.get_secret_ttl()
-    await send_temporary_secret(query.bot, query.message.chat.id, f"🔐 Секрет:\n<code>{secret}</code>", ttl_seconds=ttl)
-    await query.answer(f"Показано на {ttl} сек")
 
-
-@router.callback_query(F.data.startswith("vps:archive:"))
-async def vps_archive_toggle(query: CallbackQuery, services: AppServices, user_id: int) -> None:
-    server_id = query.data.split(":", maxsplit=2)[2]
-    result = await services.servers.toggle_archive(user_id, server_id)
-    if not result:
+    if not deleted_name:
         await query.answer("Сервер не найден", show_alert=True)
         return
-    await _render_server_card(query, services, user_id, server_id)
-    await query.answer("Статус изменён")
+
+    await query.message.edit_text(f"Сервер {html.escape(deleted_name)} успешно удалён.", parse_mode="HTML")
+    await query.answer("Удалено")
 
 
-@router.callback_query(F.data.startswith("vps:favorite:"))
-async def vps_favorite_toggle(query: CallbackQuery, services: AppServices, user_id: int) -> None:
+@router.callback_query(F.data.startswith("vps:delete_cancel:"))
+async def vps_delete_cancel(query: CallbackQuery, services: AppServices, user_id: int) -> None:
     server_id = query.data.split(":", maxsplit=2)[2]
-    result = await services.servers.toggle_favorite(user_id, server_id)
-    if not result:
-        await query.answer("Сервер не найден", show_alert=True)
-        return
     await _render_server_card(query, services, user_id, server_id)
-    await query.answer("Обновлено")
+    await query.answer("Отменено")
 
 
 @router.message(F.text.casefold() == "отмена")
