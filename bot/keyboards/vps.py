@@ -46,7 +46,6 @@ def server_card_keyboard(server_id: str, is_archived: bool, is_favorite: bool) -
             [InlineKeyboardButton(text="📋 Скопировать SSH", callback_data=f"vps:copy_ssh:{server_id}")],
             [InlineKeyboardButton(text="📋 Скопировать всё", callback_data=f"vps:copy_all:{server_id}")],
             [InlineKeyboardButton(text="🔒 Показать секрет", callback_data=f"vps:secret_ask:{server_id}")],
-            [InlineKeyboardButton(text="📝 Редактировать нагрузку/заметки", callback_data=f"vps:edit_load:{server_id}")],
             [InlineKeyboardButton(text=favorite_text, callback_data=f"vps:favorite:{server_id}")],
             [InlineKeyboardButton(text=archive_text, callback_data=f"vps:archive:{server_id}")],
             [InlineKeyboardButton(text="➕ Добавить оплату", callback_data=f"bill:add:{server_id}")],

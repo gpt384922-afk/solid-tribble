@@ -1,7 +1,8 @@
 ﻿from __future__ import annotations
 
 import html
-from decimal import Decimal
+from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -17,121 +18,90 @@ from bot.keyboards.vps import (
     server_list_keyboard,
     vps_menu_keyboard,
 )
-from bot.states.vps_states import EditLoadStates, SearchServerState
-from bot.structured_input import (
-    ADD_SERVER_TEMPLATE,
-    ParsedServerInput,
-    StructuredInputError,
-    parse_server_input,
-)
+from bot.states.vps_states import AddServerStates, SearchServerState
 from bot.utils import send_temporary_secret
-from db.models import ServerStatus
-from services.schemas import BillingCreateSchema
+from db.models import ServerRole, ServerStatus
+from services.schemas import BillingCreateSchema, SECRET_TYPE_MAP, ServerCreateSchema
 
 router = Router()
 
-ROLE_TITLE = {
-    "bridge": "Мост",
-    "xray-edge": "Xray Edge",
-    "panel": "Панель",
-    "db": "База данных",
-    "test": "Тест",
-    "other": "Другое",
-}
-
-STATUS_TITLE = {
-    "active": "Активен",
-    "archived": "В архиве",
-}
-
-SECRET_TYPE_TITLE = {
-    "password": "Пароль",
-    "private_key": "Приватный ключ",
-    "none": "Нет",
-}
-
-PENDING_SERVER_INPUT_USERS: set[int] = set()
-PENDING_SERVER_PREVIEWS: dict[int, ParsedServerInput] = {}
+def _opt(value: str) -> str | None:
+    cleaned = value.strip()
+    if cleaned in {"", "-", "—"}:
+        return None
+    return cleaned
 
 
-def _reset_server_add(user_id: int) -> None:
-    PENDING_SERVER_INPUT_USERS.discard(user_id)
-    PENDING_SERVER_PREVIEWS.pop(user_id, None)
+def _parse_iso_date(value: str, label: str) -> date:
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise ValueError(f"{label}: используйте формат YYYY-MM-DD") from exc
 
 
-def _format_load(value: Decimal | float | None) -> str:
-    if value is None:
-        return "-"
-    return f"{float(value):.2f}%"
-
-
-def _format_money(amount: object, currency: str) -> str:
-    return f"{amount} {currency}".strip()
-
-
-def _server_card_text(server, latest_billing) -> str:
-    tag_text = ", ".join(tag.tag for tag in server.tags) if server.tags else "—"
-    ssh_line = f"{server.ssh_user}@{server.ip4}:{server.ssh_port}"
-    status_emoji = "🟢" if server.status == ServerStatus.ACTIVE else "🟡"
-
-    if latest_billing:
-        pay_amount = _format_money(latest_billing.price_amount, latest_billing.price_currency)
-        pay_expires = latest_billing.expires_at.strftime("%Y-%m-%d")
+def _parse_amount_with_currency(value: str) -> tuple[str, str]:
+    raw = value.strip()
+    parts = raw.split()
+    if len(parts) == 1:
+        amount_raw = parts[0]
+        currency = "EUR"
+    elif len(parts) == 2:
+        amount_raw = parts[0]
+        currency = parts[1].upper()
     else:
-        pay_amount = "—"
-        pay_expires = "—"
+        raise ValueError("Сумма: используйте формат '10' или '10 EUR'")
 
-    notes = html.escape(server.notes or "—")
-    net_notes = html.escape(server.net_notes or "—")
+    try:
+        amount = Decimal(amount_raw.replace(",", "."))
+    except InvalidOperation as exc:
+        raise ValueError("Сумма должна быть числом") from exc
 
+    if amount <= 0:
+        raise ValueError("Сумма должна быть больше 0")
+
+    return str(amount), currency
+
+
+def _derive_period(paid_at: date, expires_at: date) -> str:
+    days = (expires_at - paid_at).days
+    return f"{days}d" if days > 0 else "custom"
+
+
+def _preview_text(data: dict[str, str]) -> str:
+    domain = data.get("domain") or "—"
     return (
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"🖥️ Название: {html.escape(server.name)}\n"
-        f"🧩 Роль: {ROLE_TITLE.get(server.role.value, server.role.value)}\n"
-        f"🏢 Провайдер: {html.escape(server.provider)}\n\n"
-        f"🌍 IPv4: {html.escape(server.ip4)}\n"
-        f"🌐 IPv6: {html.escape(server.ip6 or '—')}\n"
-        f"🔗 Домен: {html.escape(server.domain or '—')}\n\n"
-        f"🔐 SSH: {html.escape(ssh_line)}\n"
-        f"🏷️ Теги: {html.escape(tag_text)}\n"
-        f"📝 Заметки: {notes}\n"
-        f"📊 Нагрузка CPU/RAM/DISK: {_format_load(server.cpu_load)} / {_format_load(server.ram_load)} / {_format_load(server.disk_load)}\n"
-        f"🌐 Сеть: {net_notes}\n\n"
-        "💰 Последняя оплата:\n"
-        f"   Сумма: {html.escape(pay_amount)}\n"
-        f"   Истекает: {pay_expires}\n\n"
-        f"Статус: {status_emoji} {STATUS_TITLE.get(server.status.value, server.status.value)}\n"
-        "━━━━━━━━━━━━━━━━━━"
+        "Проверьте перед сохранением:\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"🖥 {html.escape(data['name'])}\n"
+        f"🏢 {html.escape(data['provider'])}\n"
+        f"🌍 {html.escape(data['ip4'])}\n"
+        f"🔗 {html.escape(domain)}\n\n"
+        f"🔐 SSH: {html.escape(data['ssh_user'])}@{html.escape(data['ip4'])}\n"
+        f"💰 {html.escape(data['amount'])} {html.escape(data['currency'])}\n"
+        f"📅 До: {html.escape(data['expires_at'])}\n"
+        "━━━━━━━━━━━━━━━━"
     )
 
 
-def _server_preview_text(parsed: ParsedServerInput) -> str:
-    server = parsed.server
-    billing = parsed.billing
-    secret_mask = "••••••••" if server.secret_type.value != "none" and server.secret_value else "—"
-    tags = ", ".join(server.tags) if server.tags else "—"
+def _server_card_text(server, latest_billing) -> str:
+    domain = server.domain or "—"
+    if latest_billing:
+        amount = f"{latest_billing.price_amount} {latest_billing.price_currency}"
+        expires = latest_billing.expires_at.isoformat()
+    else:
+        amount = "—"
+        expires = "—"
 
     return (
-        "📥 Предпросмотр нового сервера\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"🖥️ Название: {html.escape(server.name)}\n"
-        f"🧩 Роль: {ROLE_TITLE.get(server.role.value, server.role.value)}\n"
-        f"🏢 Провайдер: {html.escape(server.provider)}\n\n"
-        f"🌍 IPv4: {html.escape(server.ip4)}\n"
-        f"🌐 IPv6: {html.escape(server.ip6 or '—')}\n"
-        f"🔗 Домен: {html.escape(server.domain or '—')}\n"
-        f"🔐 SSH: {html.escape(f'{server.ssh_user}@{server.ip4}:{server.ssh_port}')}\n"
-        f"🔒 Тип секрета: {SECRET_TYPE_TITLE.get(server.secret_type.value, server.secret_type.value)}\n"
-        f"🔒 Секрет: {secret_mask}\n"
-        f"🏷️ Теги: {html.escape(tags)}\n"
-        f"📝 Заметки: {html.escape(server.notes or '—')}\n\n"
-        "💰 Оплата:\n"
-        f"   Дата оплаты: {billing.paid_at.isoformat()}\n"
-        f"   Дата истечения: {billing.expires_at.isoformat()}\n"
-        f"   Сумма: {html.escape(_format_money(billing.amount, billing.currency))}\n"
-        f"   Период: {html.escape(billing.period)}\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "Сохранить запись?"
+        "━━━━━━━━━━━━━━━━\n"
+        f"🖥 {html.escape(server.name)}\n"
+        f"🏢 {html.escape(server.provider)}\n"
+        f"🌍 {html.escape(server.ip4)}\n"
+        f"🔗 {html.escape(domain)}\n\n"
+        f"🔐 SSH: {html.escape(server.ssh_user)}@{html.escape(server.ip4)}\n"
+        f"💰 {html.escape(amount)}\n"
+        f"📅 До: {html.escape(expires)}\n"
+        "━━━━━━━━━━━━━━━━"
     )
 
 
@@ -149,90 +119,209 @@ async def _render_server_card(query: CallbackQuery, services: AppServices, user_
     )
 
 
+async def _start_add_flow(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(AddServerStates.name)
+    await message.answer("1/10 Название сервера?", reply_markup=CANCEL_MENU)
+
+
 @router.message(Command("add_server"))
-async def cmd_add_server(message: Message) -> None:
-    if not message.from_user:
-        return
-    _reset_server_add(message.from_user.id)
-    PENDING_SERVER_INPUT_USERS.add(message.from_user.id)
-    await message.answer(ADD_SERVER_TEMPLATE, reply_markup=CANCEL_MENU)
+async def cmd_add_server(message: Message, state: FSMContext) -> None:
+    await _start_add_flow(message, state)
 
 
 @router.callback_query(F.data == "vps:add")
-async def vps_add_start(query: CallbackQuery) -> None:
-    if not query.from_user:
-        return
-    _reset_server_add(query.from_user.id)
-    PENDING_SERVER_INPUT_USERS.add(query.from_user.id)
-    await query.message.answer(ADD_SERVER_TEMPLATE, reply_markup=CANCEL_MENU)
+async def vps_add_start(query: CallbackQuery, state: FSMContext) -> None:
+    await _start_add_flow(query.message, state)
     await query.answer()
 
 
-@router.message(lambda m: bool(m.from_user and m.from_user.id in PENDING_SERVER_INPUT_USERS))
-async def vps_add_parse_single(message: Message) -> None:
-    if not message.from_user:
+@router.message(AddServerStates.name)
+async def add_server_name(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("Название не может быть пустым.")
         return
-    user_id = message.from_user.id
-    text = (message.text or "").strip()
+    await state.update_data(name=value)
+    await state.set_state(AddServerStates.provider)
+    await message.answer("2/10 Провайдер?")
 
-    if text.casefold() == "отмена":
-        _reset_server_add(user_id)
-        await message.answer("Добавление сервера отменено.")
+
+@router.message(AddServerStates.provider)
+async def add_server_provider(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("Провайдер не может быть пустым.")
+        return
+    await state.update_data(provider=value)
+    await state.set_state(AddServerStates.ip4)
+    await message.answer("3/10 IPv4?")
+
+
+@router.message(AddServerStates.ip4)
+async def add_server_ip4(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
+    await state.update_data(ip4=value)
+    await state.set_state(AddServerStates.domain)
+    await message.answer("4/10 Домен? (или '-')")
+
+
+@router.message(AddServerStates.domain)
+async def add_server_domain(message: Message, state: FSMContext) -> None:
+    value = _opt(message.text or "")
+    await state.update_data(domain=value)
+    await state.set_state(AddServerStates.ssh_user)
+    await message.answer("5/10 SSH пользователь?")
+
+
+@router.message(AddServerStates.ssh_user)
+async def add_server_ssh_user(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
+    if not value:
+        await message.answer("SSH пользователь не может быть пустым.")
+        return
+    await state.update_data(ssh_user=value)
+    await state.set_state(AddServerStates.secret_type)
+    await message.answer("6/10 Тип секрета: password/private_key/none")
+
+
+@router.message(AddServerStates.secret_type)
+async def add_server_secret_type(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip().lower()
+    if value not in SECRET_TYPE_MAP:
+        await message.answer("Допустимо только: password/private_key/none")
+        return
+    await state.update_data(secret_type=value)
+    await state.set_state(AddServerStates.secret_value)
+    await message.answer("7/10 Секрет? (если none, отправьте '-')")
+
+
+@router.message(AddServerStates.secret_value)
+async def add_server_secret_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    secret_type = data["secret_type"]
+    secret = _opt(message.text or "")
+
+    if secret_type != "none" and not secret:
+        await message.answer("Для выбранного типа секрета поле обязательно.")
         return
 
-    if text.startswith("/"):
-        await message.answer("Сначала завершите ввод по шаблону или отправьте «Отмена».")
-        return
+    await state.update_data(secret_value=secret)
+    await state.set_state(AddServerStates.paid_at)
+    await message.answer("8/10 Дата оплаты (YYYY-MM-DD)?")
 
+
+@router.message(AddServerStates.paid_at)
+async def add_server_paid_at(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
     try:
-        parsed = parse_server_input(text, user_id)
-    except StructuredInputError as exc:
-        errors = "\n".join(f"• {html.escape(item)}" for item in exc.errors)
-        await message.answer(
-            f"Не удалось разобрать шаблон:\n{errors}\n\nПроверьте формат и отправьте сообщение заново.",
-            parse_mode="HTML",
-        )
-        return
-    except Exception as exc:  # noqa: BLE001
-        await message.answer(f"Ошибка разбора: {exc}")
+        _parse_iso_date(value, "Дата оплаты")
+    except ValueError as exc:
+        await message.answer(str(exc))
         return
 
-    PENDING_SERVER_INPUT_USERS.discard(user_id)
-    PENDING_SERVER_PREVIEWS[user_id] = parsed
-    await message.answer(_server_preview_text(parsed), parse_mode="HTML", reply_markup=add_server_confirm_keyboard())
+    await state.update_data(paid_at=value)
+    await state.set_state(AddServerStates.expires_at)
+    await message.answer("9/10 Дата истечения (YYYY-MM-DD)?")
+
+
+@router.message(AddServerStates.expires_at)
+async def add_server_expires_at(message: Message, state: FSMContext) -> None:
+    value = (message.text or "").strip()
+    try:
+        _parse_iso_date(value, "Дата истечения")
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+
+    await state.update_data(expires_at=value)
+    await state.set_state(AddServerStates.amount)
+    await message.answer("10/10 Сумма? (например: 10 или 10 EUR)")
+
+
+@router.message(AddServerStates.amount)
+async def add_server_amount(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+    try:
+        amount, currency = _parse_amount_with_currency(raw)
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+
+    data = await state.get_data()
+    await state.update_data(amount=amount, currency=currency)
+
+    preview_data = {
+        "name": data["name"],
+        "provider": data["provider"],
+        "ip4": data["ip4"],
+        "domain": data.get("domain") or "—",
+        "ssh_user": data["ssh_user"],
+        "amount": amount,
+        "currency": currency,
+        "expires_at": data["expires_at"],
+    }
+
+    await state.set_state(AddServerStates.confirm)
+    await message.answer(_preview_text(preview_data), parse_mode="HTML", reply_markup=add_server_confirm_keyboard())
 
 
 @router.callback_query(F.data == "vps:add:confirm")
-async def vps_add_confirm(query: CallbackQuery, services: AppServices) -> None:
+async def add_server_confirm(query: CallbackQuery, state: FSMContext, services: AppServices) -> None:
     if not query.from_user:
+        await query.answer("Пользователь не определен", show_alert=True)
         return
-    user_id = query.from_user.id
-    parsed = PENDING_SERVER_PREVIEWS.get(user_id)
-    if not parsed:
-        await query.answer("Нет данных для сохранения. Повторите /add_server", show_alert=True)
+
+    data = await state.get_data()
+    if not data:
+        await query.answer("Нет данных для сохранения. Начните заново: /add_server", show_alert=True)
         return
 
     try:
-        server = await services.servers.create_server(parsed.server)
+        paid_at = _parse_iso_date(data["paid_at"], "Дата оплаты")
+        expires_at = _parse_iso_date(data["expires_at"], "Дата истечения")
+        if expires_at < paid_at:
+            await query.answer("Дата истечения раньше даты оплаты", show_alert=True)
+            return
+
+        server_payload = ServerCreateSchema(
+            owner_telegram_id=query.from_user.id,
+            name=data["name"],
+            role=ServerRole.OTHER,
+            provider=data["provider"],
+            ip4=data["ip4"],
+            ip6=None,
+            domain=data.get("domain"),
+            ssh_port=22,
+            ssh_user=data["ssh_user"],
+            secret_type=SECRET_TYPE_MAP[data["secret_type"]],
+            secret_value=data.get("secret_value"),
+            tags=[],
+            notes="",
+        )
+        server = await services.servers.create_server(server_payload)
+
+        period = _derive_period(paid_at, expires_at)
         await services.billing.add_billing(
             BillingCreateSchema(
                 server_id=str(server.id),
-                paid_at=parsed.billing.paid_at,
-                expires_at=parsed.billing.expires_at,
-                price_amount=parsed.billing.amount,
-                price_currency=parsed.billing.currency,
-                period=parsed.billing.period,
-                comment=parsed.billing.comment,
+                paid_at=paid_at,
+                expires_at=expires_at,
+                price_amount=data["amount"],
+                price_currency=data["currency"],
+                period=period,
+                comment=None,
             )
         )
     except Exception as exc:  # noqa: BLE001
         await query.answer("Ошибка сохранения", show_alert=True)
-        await query.message.answer(f"Не удалось сохранить данные: {exc}")
+        await query.message.answer(f"Не удалось сохранить сервер: {exc}")
         return
 
-    _reset_server_add(user_id)
-    refreshed = await services.servers.get_server(user_id, str(server.id))
+    await state.clear()
+    refreshed = await services.servers.get_server(query.from_user.id, str(server.id))
     latest_billing = await services.billing.latest_billing_for_server(server.id)
+
     if refreshed:
         await query.message.edit_text(
             _server_card_text(refreshed, latest_billing),
@@ -241,13 +330,13 @@ async def vps_add_confirm(query: CallbackQuery, services: AppServices) -> None:
         )
     else:
         await query.message.edit_text("Сервер сохранен.")
-    await query.answer("Сохранено")
+
+    await query.answer("Готово")
 
 
 @router.callback_query(F.data == "vps:add:cancel")
-async def vps_add_cancel(query: CallbackQuery) -> None:
-    if query.from_user:
-        _reset_server_add(query.from_user.id)
+async def add_server_cancel(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     await query.message.edit_text("Добавление сервера отменено.")
     await query.answer()
 
@@ -255,7 +344,7 @@ async def vps_add_cancel(query: CallbackQuery) -> None:
 @router.callback_query(F.data == "vps:search")
 async def vps_search_start(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(SearchServerState.query)
-    await query.message.answer("Введите строку поиска (имя/IP/роль/провайдер/тег):", reply_markup=CANCEL_MENU)
+    await query.message.answer("Введите строку поиска (имя/IP/провайдер):", reply_markup=CANCEL_MENU)
     await query.answer()
 
 
@@ -337,7 +426,7 @@ async def vps_copy_ssh(query: CallbackQuery, services: AppServices, user_id: int
     if not server:
         await query.answer("Сервер не найден", show_alert=True)
         return
-    cmd = f"ssh {server.ssh_user}@{server.ip4} -p {server.ssh_port}"
+    cmd = f"ssh {server.ssh_user}@{server.ip4}"
     await query.message.answer(f"SSH для копирования:\n<code>{cmd}</code>", parse_mode="HTML")
     await query.answer("Отправил")
 
@@ -395,84 +484,12 @@ async def vps_favorite_toggle(query: CallbackQuery, services: AppServices, user_
     await query.answer("Обновлено")
 
 
-@router.callback_query(F.data.startswith("vps:edit_load:"))
-async def vps_edit_load_start(query: CallbackQuery, state: FSMContext) -> None:
-    server_id = query.data.split(":", maxsplit=2)[2]
-    await state.update_data(server_id=server_id)
-    await state.set_state(EditLoadStates.notes)
-    await query.message.answer("Введите заметки (или '-' чтобы оставить пусто):", reply_markup=CANCEL_MENU)
-    await query.answer()
-
-
-@router.message(EditLoadStates.notes)
-async def vps_edit_load_notes(message: Message, state: FSMContext) -> None:
-    value = (message.text or "").strip()
-    await state.update_data(notes="" if value == "-" else value)
-    await state.set_state(EditLoadStates.cpu)
-    await message.answer("CPU % (например 12.5 или '-'): ")
-
-
-@router.message(EditLoadStates.cpu)
-async def vps_edit_load_cpu(message: Message, state: FSMContext) -> None:
-    await state.update_data(cpu=None if (message.text or "").strip() == "-" else (message.text or "").strip())
-    await state.set_state(EditLoadStates.ram)
-    await message.answer("RAM % (например 34.7 или '-'): ")
-
-
-@router.message(EditLoadStates.ram)
-async def vps_edit_load_ram(message: Message, state: FSMContext) -> None:
-    await state.update_data(ram=None if (message.text or "").strip() == "-" else (message.text or "").strip())
-    await state.set_state(EditLoadStates.disk)
-    await message.answer("DISK % (например 70.1 или '-'): ")
-
-
-@router.message(EditLoadStates.disk)
-async def vps_edit_load_disk(message: Message, state: FSMContext) -> None:
-    await state.update_data(disk=None if (message.text or "").strip() == "-" else (message.text or "").strip())
-    await state.set_state(EditLoadStates.net_notes)
-    await message.answer("Заметка по сети (или '-'): ")
-
-
-@router.message(EditLoadStates.net_notes)
-async def vps_edit_load_finish(message: Message, state: FSMContext, services: AppServices, user_id: int) -> None:
-    payload = await state.get_data()
-    net_notes = (message.text or "").strip()
-    net_notes = None if net_notes == "-" else net_notes
-
-    def parse_optional_float(value: str | None) -> float | None:
-        if value in (None, ""):
-            return None
-        return float(str(value).replace(",", "."))
-
-    try:
-        ok = await services.servers.update_server_notes_and_load(
-            owner_telegram_id=user_id,
-            server_id=payload["server_id"],
-            notes=payload.get("notes", ""),
-            cpu_load=parse_optional_float(payload.get("cpu")),
-            ram_load=parse_optional_float(payload.get("ram")),
-            disk_load=parse_optional_float(payload.get("disk")),
-            net_notes=net_notes,
-        )
-    except ValueError:
-        await message.answer("Ошибка формата нагрузки. Используйте число или '-'.")
-        return
-
-    await state.clear()
-    await message.answer("Данные обновлены." if ok else "Сервер не найден.")
-
-
 @router.message(F.text.casefold() == "отмена")
 async def common_cancel(message: Message, state: FSMContext) -> None:
-    pending_cleared = False
-    if message.from_user and message.from_user.id in PENDING_SERVER_INPUT_USERS | set(PENDING_SERVER_PREVIEWS.keys()):
-        _reset_server_add(message.from_user.id)
-        pending_cleared = True
-
-    if await state.get_state() is not None:
-        await state.clear()
-        await message.answer("Действие отменено.")
+    current = await state.get_state()
+    if not current:
         return
 
-    if pending_cleared:
+    if current.startswith((AddServerStates.__name__, SearchServerState.__name__)):
+        await state.clear()
         await message.answer("Действие отменено.")
