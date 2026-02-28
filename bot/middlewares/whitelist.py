@@ -19,13 +19,18 @@ class WhitelistMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         user_id = None
-        if isinstance(event, Message) and event.from_user:
-            user_id = event.from_user.id
+        event_user = data.get("event_from_user")
+        if event_user and getattr(event_user, "id", None):
+            user_id = int(event_user.id)
+        elif isinstance(event, Message) and event.from_user:
+            user_id = int(event.from_user.id)
         elif isinstance(event, CallbackQuery) and event.from_user:
-            user_id = event.from_user.id
+            user_id = int(event.from_user.id)
 
         if user_id is None:
-            return await handler(event, data)
+            # Не передаем событие дальше без user_id, чтобы хендлеры не падали
+            # на обязательном параметре user_id.
+            return None
 
         allowed = await self._access_service.is_allowed(user_id)
         if not allowed:

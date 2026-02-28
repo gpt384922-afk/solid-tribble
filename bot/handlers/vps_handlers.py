@@ -407,7 +407,11 @@ async def add_server_tags(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AddServerStates.notes)
-async def add_server_finish(message: Message, state: FSMContext, services: AppServices, user_id: int) -> None:
+async def add_server_finish(message: Message, state: FSMContext, services: AppServices) -> None:
+    if not message.from_user:
+        await message.answer("Не удалось определить пользователя.")
+        return
+    user_id = message.from_user.id
     raw_notes = (message.text or "").strip()
     data = await state.get_data()
     try:
